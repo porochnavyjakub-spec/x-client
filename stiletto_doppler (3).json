@@ -1,0 +1,51 @@
+package dev.xclient.core;
+
+import com.google.gson.*;
+import net.fabricmc.loader.api.FabricLoader;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public final class Config {
+    private static final Path FILE = FabricLoader.getInstance().getConfigDir().resolve("xclient.json");
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+    public static void save() {
+        try {
+            JsonObject root = new JsonObject();
+            for (Module m : ModuleManager.ALL) {
+                JsonObject o = new JsonObject();
+                o.addProperty("enabled", m.enabled);
+                JsonObject s = new JsonObject();
+                for (Setting<?> st : m.settings) {
+                    JsonElement e = st.toJson();
+                    if (e != null) s.add(st.name, e);
+                }
+                o.add("settings", s);
+                m.save(o);
+                root.add(m.name, o);
+            }
+            Files.writeString(FILE, GSON.toJson(root));
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    public static void load() {
+        if (!Files.exists(FILE)) return;
+        try {
+            JsonObject root = JsonParser.parseString(Files.readString(FILE)).getAsJsonObject();
+            for (Module m : ModuleManager.ALL) {
+                if (!root.has(m.name)) continue;
+                JsonObject o = root.getAsJsonObject(m.name);
+                if (o.has("settings")) {
+                    JsonObject s = o.getAsJsonObject("settings");
+                    for (Setting<?> st : m.settings) {
+                        if (!s.has(st.name)) continue;
+                        try { st.fromJson(s.get(st.name)); } catch (Exception ignored) {}
+                    }
+                }
+                m.load(o);
+                if (o.has("enabled")) m.setEnabled(o.get("enabled").getAsBoolean());
+            }
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+}

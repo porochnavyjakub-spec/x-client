@@ -1,0 +1,30 @@
+# X Client (Fabric, Minecraft 26.2)
+
+Client-side mod. **P** opens the ClickGUI (panels: Movement | Render | PvP | Client | HUD).
+Left click a module = on/off, the triangle (or right click) opens its settings, the search box filters
+modules and settings, the red X in the corner closes it. **I** = CS2 inspect screen for your knife skin.
+Every module also has an unbound toggle key in Options > Controls > Key Binds.
+(Vanilla "Social Interactions" is also on P - rebind one of them if both open.)
+
+## Modules
+- Movement: Sprint
+- Render: PlayerESP, SoundESP, BlockESP, StorageESP, DeepslateFinder, HoleESP, SusChunk, SeedXRay, Fullbright
+- PvP: KillAura, TriggerBot, AutoTotem, PlayerAlert
+- Client: SkyChanger (Sun rays / Storm / Sunset / Night / Clear blue), KnifeSkins (6 CS2 knives, switch in settings)
+- HUD: TotemCounter, ModuleList, ArmorHud, Coordinates, InfoHud (layout from the sketch)
+
+## Knife skins
+Karambit | Doppler, Nomad Knife | Doppler, Butterfly Knife | Damascus Steel, Talon Knife | Doppler,
+Stiletto Knife | Doppler, M9 Bayonet | Doppler. Edit names / numbers in `modules/Knives.java`;
+sprites are in `assets/xclient/textures/item/` (replace the PNGs with your own art if you want).
+Skins are applied to swords in your hotbar/offhand on the client only and removed while any screen is open.
+
+## SeedXRay
+Overworld only. Enter the seed, pick blocks, set range. Press **Calibrate** near visible ores if predictions
+don't match.
+
+## Build
+JDK 25. Generate a Fabric template for 26.2 at https://fabricmc.net/develop/template/ (gives you the Gradle
+wrapper), copy `src/`, `build.gradle`, `gradle.properties` over it, run `./gradlew build`.
+Sky mixins are in a separate non-required mixin config: if they don't match your exact version the game still
+starts and the sky stays vanilla.

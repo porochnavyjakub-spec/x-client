@@ -1,0 +1,64 @@
+package dev.xclient.gui;
+
+import dev.xclient.XClient;
+import dev.xclient.modules.Knives.Knife;
+import dev.xclient.util.Draw;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+
+/** CS2-style "inspect" panel: name with rarity underline, the knife, finish info box. */
+public class InspectScreen extends Screen {
+    private final Knife k;
+    private final Identifier tex;
+    private final long opened = System.currentTimeMillis();
+
+    public InspectScreen(Knife k) {
+        super(Component.literal("Inspect"));
+        this.k = k;
+        this.tex = Identifier.fromNamespaceAndPath("xclient", "textures/item/" + k.id() + ".png");
+    }
+
+    @Override public boolean isPauseScreen() { return false; }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
+        double t = (System.currentTimeMillis() - opened) / 1000.0;
+        g.fillGradient(0, 0, width, height, 0xB0070812, 0xE0101322);
+
+        // title + rarity (red = covert) underline
+        int tw = font.width(k.name());
+        g.text(font, k.name(), (width - tw) / 2, 22, 0xFFFFFFFF, true);
+        int lw = Math.max(tw + 60, 220);
+        g.fill((width - lw) / 2, 36, (width + lw) / 2, 38, 0xFFEB4B4B);
+
+        // knife, gently floating, with a soft glow
+        int size = Math.min(height - 150, 230), x = (width - size) / 2, y = 52 + (int) (Math.sin(t * 1.6) * 4);
+        int glow = 0x10000000 | (k.color() & 0xFFFFFF);
+        for (int i = 4; i >= 1; i--) g.fill(x - i * 14, y + size / 2 - i * 14, x + size + i * 14, y + size / 2 + i * 14, glow);
+        g.blit(RenderPipelines.GUI_TEXTURED, tex, x, y, 0f, 0f, size, size, 128, 128, 128, 128);
+
+        // info box (bottom left)
+        int bx = 24, by = height - 112, bw = 190, bh = 92;
+        Draw.rrect(g, bx, by, bw, bh, 0xE0141830);
+        g.outline(bx, by, bw, bh, 0x667C6CFF);
+        String[][] rows = {{"Finish Style", k.finish()}, {"Finish Catalog", String.valueOf(k.catalog())},
+                {"Pattern Template", String.valueOf(k.pattern())}, {"Wear Rating", k.wear()}, {"Exterior", k.exterior()}};
+        for (int i = 0; i < rows.length; i++) {
+            g.text(font, rows[i][0] + ":", bx + 8, by + 8 + i * 16, 0xFFEDEDF5, false);
+            g.text(font, rows[i][1], bx + 8 + font.width(rows[i][0] + ": "), by + 8 + i * 16, 0xFFB9BFDA, false);
+        }
+        // description
+        g.text(font, font.plainSubstrByWidth(k.desc(), width - bx - bw - 60), bx + bw + 16, by + bh - 16, 0xFF8D90A3, false);
+        g.text(font, "I / Esc - close", width - 8 - font.width("I / Esc - close"), height - 14, 0xFF5B5E70, false);
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent e) {
+        if (XClient.inspectKey != null && XClient.inspectKey.matches(e)) { onClose(); return true; }
+        return super.keyPressed(e);
+    }
+}

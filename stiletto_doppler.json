@@ -1,0 +1,293 @@
+package dev.xclient.gui;
+
+import dev.xclient.core.*;
+import dev.xclient.core.Module;
+import dev.xclient.util.Draw;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.CharacterEvent;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
+import dev.xclient.XClient;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Panel layout from the sketch: transparent background, one column per category
+ * (Movement, Render, PvP, Client, HUD), a triangle button on every module that opens its settings,
+ * search box in the top bar and a close button in the corner.
+ */
+public class ClickGui extends Screen {
+    // palette (also used by BlockPicker / InspectScreen)
+    static final int BG = 0xE6101119, HOVER = 0xFF262838, FIELD = 0xFF0C0D13, ACCENT = 0xFF7C6CFF, ACCENT2 = 0xFF38D6FF,
+            TEXT = 0xFFEDEDF5, DIM = 0xFF8D90A3, FAINT = 0xFF5B5E70, OFF = 0xFF34364A, PANEL = 0xC8121320, ROW = 0xB0181A28;
+
+    private record Row(int kind, Module m, Setting<?> s, int x, int y, int w, int h) {
+        boolean hit(double mx, double my) { return mx >= x && mx < x + w && my >= y && my < y + h; }
+    }
+
+    private final List<Row> rows = new ArrayList<>();
+    private final List<int[]> panels = new ArrayList<>(); // x, y, w, h, categoryOrdinal
+    private String query = "";
+    private boolean searchFocus = true;
+    private Setting.Str strFocus;
+    private Row drag;
+    private int scroll, contentH;
+
+    public ClickGui() { super(Component.literal("X Client")); }
+
+    @Override public boolean isPauseScreen() { return false; }
+
+    @Override
+    public void onClose() {
+        Config.save();
+        super.onClose();
+    }
+
+    private int panelW() { return Mth.clamp((width - 40) / 5 - 6, 96, 128); }
+    private int startX() { return (width - (5 * panelW() + 4 * 6)) / 2; }
+    private static final int TOP = 40, HEAD = 18, ROWH = 16;
+
+    private boolean matches(Module m) {
+        String q = query.toLowerCase(Locale.ROOT).trim();
+        if (q.isEmpty()) return true;
+        if (m.name.toLowerCase(Locale.ROOT).contains(q) || m.desc.toLowerCase(Locale.ROOT).contains(q)) return true;
+        for (Setting<?> s : m.settings) if (s.name.toLowerCase(Locale.ROOT).contains(q)) return true;
+        return false;
+    }
+
+    private static int kindOf(Setting<?> s) {
+        if (s instanceof Setting.Bool) return 1;
+        if (s instanceof Setting.Num) return 2;
+        if (s instanceof Setting.Str) return 3;
+        if (s instanceof Setting.Blocks) return 4;
+        if (s instanceof Setting.Action) return 5;
+        if (s instanceof Setting.Mode) return 6;
+        return 7;
+    }
+
+    private void layout() {
+        rows.clear();
+        panels.clear();
+        int pw = panelW(), sx = startX(), maxBottom = 0;
+        Category[] cats = Category.values();
+        for (int i = 0; i < cats.length; i++) {
+            int x = sx + i * (pw + 6), y = TOP - scroll;
+            int top = y;
+            y += HEAD + 2;
+            for (Module m : ModuleManager.ALL) {
+                if (m.category != cats[i] || !matches(m)) continue;
+                rows.add(new Row(0, m, null, x + 3, y, pw - 6, ROWH));
+                y += ROWH + 2;
+                if (m.expanded) {
+                    for (Setting<?> s : m.settings) {
+                        int k = kindOf(s), h = (k == 2 || k == 3) ? 26 : 16;
+                        rows.add(new Row(k, m, s, x + 7, y, pw - 14, h));
+                        y += h + 2;
+                    }
+                    y += 2;
+                }
+            }
+            panels.add(new int[]{x, top, pw, y - top + 2, i});
+            maxBottom = Math.max(maxBottom, y + scroll);
+        }
+        contentH = maxBottom - TOP;
+        scroll = Mth.clamp(scroll, 0, Math.max(0, contentH - (height - TOP - 8)));
+    }
+
+    private void t(GuiGraphicsExtractor g, String s, int x, int y, int c) { g.text(font, s, x, y, c, false); }
+
+    private static void tri(GuiGraphicsExtractor g, int x, int y, boolean open, int c) {
+        if (open) { // pointing down
+            g.fill(x, y + 1, x + 7, y + 2, c); g.fill(x + 1, y + 2, x + 6, y + 3, c);
+            g.fill(x + 2, y + 3, x + 5, y + 4, c); g.fill(x + 3, y + 4, x + 4, y + 5, c);
+        } else {    // pointing right
+            g.fill(x + 1, y, x + 2, y + 7, c); g.fill(x + 2, y + 1, x + 3, y + 6, c);
+            g.fill(x + 3, y + 2, x + 4, y + 5, c); g.fill(x + 4, y + 3, x + 5, y + 4, c);
+        }
+    }
+
+    // ---------- render ----------
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
+        layout();
+        g.fillGradient(0, 0, width, height, 0x30000000, 0x66000000); // transparent: the world stays visible
+
+        // top bar: logo, search, close
+        g.text(font, "X", 14, 12, ACCENT2, true);
+        g.text(font, "client", 24, 12, TEXT, true);
+        int sw = 170, sx = (width - sw) / 2;
+        Draw.rrect(g, sx, 8, sw, 18, FIELD);
+        if (searchFocus) g.outline(sx, 8, sw, 18, 0x887C6CFF);
+        if (query.isEmpty()) t(g, "Search", sx + 8, 14, FAINT);
+        else t(g, query + ((searchFocus && (System.currentTimeMillis() / 500) % 2 == 0) ? "_" : ""), sx + 8, 14, TEXT);
+        boolean hc = mx >= width - 28 && mx < width - 10 && my >= 8 && my < 26;
+        Draw.rrect(g, width - 28, 8, 18, 18, hc ? 0xFFB23B4D : OFF);
+        t(g, "x", width - 21, 13, TEXT);
+
+        Category[] cats = Category.values();
+        g.enableScissor(0, TOP - 4, width, height);
+        for (int[] p : panels) {
+            Draw.rrect(g, p[0], p[1], p[2], p[3], PANEL);
+            g.fillGradient(p[0] + 2, p[1] + HEAD, p[0] + p[2] - 2, p[1] + HEAD + 1, ACCENT, ACCENT2);
+            String name = cats[p[4]].label;
+            g.text(font, name, p[0] + (p[2] - font.width(name)) / 2, p[1] + 5, TEXT, true);
+        }
+        for (Row r : rows) {
+            if (r.y + r.h < TOP - 4 || r.y > height) continue;
+            drawRow(g, r, mx, my);
+        }
+        g.disableScissor();
+    }
+
+    private void drawRow(GuiGraphicsExtractor g, Row r, int mx, int my) {
+        boolean hov = r.hit(mx, my) && my > TOP - 4;
+        switch (r.kind) {
+            case 0 -> {
+                Draw.rrect(g, r.x, r.y, r.w, r.h, hov ? HOVER : ROW);
+                if (r.m.enabled) g.fillGradient(r.x, r.y + 3, r.x + 2, r.y + r.h - 3, ACCENT, ACCENT2);
+                if (!r.m.settings.isEmpty()) tri(g, r.x + 6, r.y + 5, r.m.expanded, r.m.expanded ? ACCENT2 : DIM);
+                String n = font.plainSubstrByWidth(r.m.name, r.w - 22);
+                t(g, n, r.x + 18, r.y + 4, r.m.enabled ? ACCENT2 : TEXT);
+            }
+            case 1 -> {
+                Setting.Bool b = (Setting.Bool) r.s;
+                if (hov) Draw.rrect(g, r.x, r.y, r.w, r.h, HOVER);
+                t(g, font.plainSubstrByWidth(b.name, r.w - 34), r.x + 4, r.y + 4, b.value ? TEXT : DIM);
+                Draw.toggle(g, r.x + r.w - 28, r.y + 2, b.value, ACCENT, OFF);
+            }
+            case 2 -> {
+                Setting.Num n = (Setting.Num) r.s;
+                t(g, font.plainSubstrByWidth(n.name, r.w - 34), r.x + 4, r.y + 2, TEXT);
+                String v = n.step >= 1 ? String.valueOf(Math.round(n.value)) : String.format(Locale.ROOT, "%.2f", n.value);
+                t(g, v, r.x + r.w - 4 - font.width(v), r.y + 2, DIM);
+                int bx = r.x + 4, bw = r.w - 8, by = r.y + 15;
+                g.fill(bx, by, bx + bw, by + 4, OFF);
+                int fw = (int) (bw * (n.value - n.min) / (n.max - n.min));
+                g.fillGradient(bx, by, bx + fw, by + 4, ACCENT, ACCENT2);
+                g.fill(bx + fw - 1, by - 2, bx + fw + 2, by + 6, 0xFFFFFFFF);
+            }
+            case 3 -> {
+                Setting.Str s = (Setting.Str) r.s;
+                t(g, s.name, r.x + 4, r.y + 2, TEXT);
+                boolean f = strFocus == s;
+                Draw.rrect(g, r.x + 2, r.y + 12, r.w - 4, 13, f ? HOVER : FIELD);
+                if (f) g.outline(r.x + 2, r.y + 12, r.w - 4, 13, 0x887C6CFF);
+                if (s.value.isEmpty() && !f) t(g, "click to type", r.x + 6, r.y + 15, FAINT);
+                else t(g, font.plainSubstrByWidth(s.value, r.w - 16, true)
+                        + ((f && (System.currentTimeMillis() / 500) % 2 == 0) ? "_" : ""), r.x + 6, r.y + 15, TEXT);
+            }
+            case 4 -> {
+                Setting.Blocks b = (Setting.Blocks) r.s;
+                Draw.rrect(g, r.x + 2, r.y, r.w - 4, r.h, hov ? ACCENT : OFF);
+                String s = b.name + " (" + b.value.size() + ")";
+                t(g, s, r.x + (r.w - font.width(s)) / 2, r.y + 4, TEXT);
+            }
+            case 5 -> {
+                Draw.rrect(g, r.x + 2, r.y, r.w - 4, r.h, hov ? ACCENT : OFF);
+                String s = font.plainSubstrByWidth(r.s.name, r.w - 12);
+                t(g, s, r.x + (r.w - font.width(s)) / 2, r.y + 4, TEXT);
+            }
+            case 6 -> {
+                Setting.Mode m = (Setting.Mode) r.s;
+                Draw.rrect(g, r.x + 2, r.y, r.w - 4, r.h, hov ? HOVER : FIELD);
+                t(g, font.plainSubstrByWidth(m.name + ": " + m.label(), r.w - 16), r.x + 6, r.y + 4, ACCENT2);
+            }
+            default -> t(g, font.plainSubstrByWidth(r.s.name + ": " + ((Setting.Info) r.s).value.get(), r.w - 8), r.x + 4, r.y + 4, FAINT);
+        }
+    }
+
+    // ---------- input ----------
+    @Override
+    public boolean mouseClicked(MouseButtonEvent e, boolean doubleClick) {
+        layout();
+        double mx = e.x(), my = e.y();
+        int btn = e.button();
+        strFocus = null;
+        searchFocus = false;
+
+        if (mx >= width - 28 && mx < width - 10 && my >= 8 && my < 26) { onClose(); return true; }
+        int sw = 170, sx = (width - sw) / 2;
+        if (mx >= sx && mx < sx + sw && my >= 8 && my < 26) { searchFocus = true; return true; }
+        if (my < TOP - 4) return true;
+
+        for (Row r : rows) {
+            if (!r.hit(mx, my)) continue;
+            switch (r.kind) {
+                case 0 -> {
+                    boolean arrow = mx < r.x + 17;
+                    if ((btn == 1 || arrow) && !r.m.settings.isEmpty()) r.m.expanded = !r.m.expanded;
+                    else if (btn == 0) r.m.toggle();
+                }
+                case 1 -> { Setting.Bool b = (Setting.Bool) r.s; b.value = !b.value; }
+                case 2 -> { drag = r; setNum(r, mx); }
+                case 3 -> strFocus = (Setting.Str) r.s;
+                case 4 -> minecraft.gui.setScreen(new BlockPicker(this, (Setting.Blocks) r.s));
+                case 5 -> ((Setting.Action) r.s).value.run();
+                case 6 -> ((Setting.Mode) r.s).next(btn == 1 ? -1 : 1);
+                default -> {}
+            }
+            return true;
+        }
+        return super.mouseClicked(e, doubleClick);
+    }
+
+    private void setNum(Row r, double mx) {
+        Setting.Num n = (Setting.Num) r.s;
+        double f = Mth.clamp((mx - (r.x + 4)) / (r.w - 8), 0.0, 1.0);
+        double v = Math.round((n.min + f * (n.max - n.min)) / n.step) * n.step;
+        n.value = Mth.clamp(v, n.min, n.max);
+    }
+
+    @Override
+    public boolean mouseDragged(MouseButtonEvent e, double dx, double dy) {
+        if (drag != null) { setNum(drag, e.x()); return true; }
+        return super.mouseDragged(e, dx, dy);
+    }
+
+    @Override
+    public boolean mouseReleased(MouseButtonEvent e) {
+        drag = null;
+        return super.mouseReleased(e);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mx, double my, double sx, double sy) {
+        scroll = Mth.clamp((int) (scroll - sy * 24), 0, Math.max(0, contentH - (height - TOP - 8)));
+        return true;
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent e) {
+        int key = e.key();
+        boolean ctrl = (e.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0;
+        if (strFocus != null) {
+            if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_ESCAPE) strFocus = null;
+            else if (key == GLFW.GLFW_KEY_BACKSPACE && !strFocus.value.isEmpty())
+                strFocus.value = strFocus.value.substring(0, strFocus.value.length() - 1);
+            else if (ctrl && key == GLFW.GLFW_KEY_V) strFocus.value += minecraft.keyboardHandler.getClipboard().trim();
+            return true;
+        }
+        if (XClient.guiKey != null && XClient.guiKey.matches(e) && query.isEmpty()) { onClose(); return true; }
+        if (searchFocus) {
+            if (key == GLFW.GLFW_KEY_BACKSPACE && !query.isEmpty()) { query = query.substring(0, query.length() - 1); return true; }
+            if (ctrl && key == GLFW.GLFW_KEY_V) { query += minecraft.keyboardHandler.getClipboard().trim(); return true; }
+            if (key == GLFW.GLFW_KEY_ESCAPE && !query.isEmpty()) { query = ""; return true; }
+        }
+        return super.keyPressed(e);
+    }
+
+    @Override
+    public boolean charTyped(CharacterEvent e) {
+        String s = new String(Character.toChars(e.codepoint()));
+        if (s.isEmpty() || s.charAt(0) < 32 || s.charAt(0) == 127) return false;
+        if (strFocus != null) { strFocus.value += s; return true; }
+        if (searchFocus && query.length() < 40) { query += s; return true; }
+        return false;
+    }
+}

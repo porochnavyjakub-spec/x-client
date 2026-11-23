@@ -1,0 +1,170 @@
+package dev.xclient.xray;
+
+import dev.xclient.xray.OreFeatures.Feature;
+import dev.xclient.xray.OreFeatures.Kind;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.WorldgenRandom;
+import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
+
+import java.util.BitSet;
+
+/**
+ * Re-implementation of vanilla ore feature placement (placement modifiers + OreFeature vein shape).
+ * Terrain is read from the client's loaded chunks where available (anti-xray only hides ores,
+ * stone/air stay correct); unloaded areas are assumed to be solid stone.
+ */
+public final class OreSim {
+    public enum Rng { XOROSHIRO, LEGACY }
+
+    public interface Sink { void hit(int x, int y, int z); }
+
+    private static final int MIN_Y = -64, MAX_Y = 320;
+    private static final int STEP_UNDERGROUND_ORES = 6;
+
+    private final ClientLevel level;
+    private final BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+    private LevelChunk cc;
+    private int ccx = Integer.MAX_VALUE, ccz = Integer.MAX_VALUE;
+
+    public OreSim(ClientLevel level) { this.level = level; }
+
+    public static WorldgenRandom newRandom(Rng r) {
+        return new WorldgenRandom(r == Rng.XOROSHIRO ? new XoroshiroRandomSource(0L) : new LegacyRandomSource(0L));
+    }
+
+    private LevelChunk chunk(int x, int z) {
+        int cx = x >> 4, cz = z >> 4;
+        if (cx != ccx || cz != ccz) {
+            cc = level.getChunkSource().getChunkNow(cx, cz);
+            ccx = cx;
+            ccz = cz;
+        }
+        return cc;
+    }
+
+    private BlockState state(int x, int y, int z) {
+        LevelChunk c = chunk(x, z);
+        return c == null ? null : c.getBlockState(m.set(x, y, z));
+    }
+
+    private static boolean replaceable(BlockState s) {
+        return s.is(BlockTags.STONE_ORE_REPLACEABLES) || s.is(BlockTags.DEEPSLATE_ORE_REPLACEABLES)
+                || OreFeatures.Ore.of(s.getBlock()) != null;
+    }
+
+    private boolean airAdjacent(int x, int y, int z) {
+        for (Direction d : Direction.values()) {
+            int ny = y + d.getStepY();
+            if (ny < MIN_Y || ny >= MAX_Y) continue;
+            BlockState s = state(x + d.getStepX(), ny, z + d.getStepZ());
+            if (s != null && s.isAir()) return true;
+        }
+        return false;
+    }
+
+    private int top(int x, int z) {
+        LevelChunk c = chunk(x, z);
+        return c == null ? Integer.MAX_VALUE : c.getHeight(Heightmap.Types.WORLD_SURFACE, x & 15, z & 15) + 1;
+    }
+
+    private Kind kind(int x, int y, int z) {
+        String id = level.getBiome(m.set(x, y, z)).getRegisteredName();
+        return OreFeatures.kindOf(id);
+    }
+
+    /** Runs one feature of the population of chunk (cx, cz). {@code pop} comes from setDecorationSeed. */
+    public void run(WorldgenRandom r, long pop, int cx, int cz, Feature f, int index, Sink sink) {
+        r.setFeatureSeed(pop, index, STEP_UNDERGROUND_ORES);
+        int n = f.rollCount(r);
+        for (int i = 0; i < n; i++) {
+            int x = (cx << 4) + r.nextInt(16);
+            int z = (cz << 4) + r.nextInt(16);
+            int y = f.rollY(r);
+            if (f.rule != OreFeatures.Rule.ANY && !f.allowed(kind(x, y, z))) continue;
+            vein(r, f, x, y, z, sink);
+        }
+    }
+
+    private void vein(WorldgenRandom r, Feature f, int ox, int oy, int oz, Sink sink) {
+        float a = r.nextFloat() * (float) Math.PI;
+        float g = f.size / 8.0F;
+        int i = Mth.ceil((f.size / 16.0F * 2.0F + 1.0F) / 2.0F);
+        double sx = ox + Math.sin(a) * g, ex = ox - Math.sin(a) * g;
+        double sz = oz + Math.cos(a) * g, ez = oz - Math.cos(a) * g;
+        double sy = oy + r.nextInt(3) - 2, ey = oy + r.nextInt(3) - 2;
+        int n = ox - Mth.ceil(g) - i, o = oy - 2 - i, p = oz - Mth.ceil(g) - i;
+        int q = 2 * (Mth.ceil(g) + i), rr = 2 * (2 + i);
+
+        boolean ok = false;
+        for (int x = n; x <= n + q && !ok; x++)
+            for (int z = p; z <= p + q && !ok; z++)
+                if (o <= top(x, z)) ok = true;
+        if (!ok) return;
+
+        int size = f.size;
+        double[] ds = new double[size * 4];
+        for (int k = 0; k < size; k++) {
+            float t = (float) k / (float) size;
+            double dx = Mth.lerp((double) t, sx, ex);
+            double dy = Mth.lerp((double) t, sy, ey);
+            double dz = Mth.lerp((double) t, sz, ez);
+            double h = r.nextDouble() * (double) size / 16.0;
+            double l = ((double) (Mth.sin((float) Math.PI * t) + 1.0F) * h + 1.0) / 2.0;
+            ds[k * 4] = dx; ds[k * 4 + 1] = dy; ds[k * 4 + 2] = dz; ds[k * 4 + 3] = l;
+        }
+        for (int k = 0; k < size - 1; k++) {
+            if (ds[k * 4 + 3] <= 0.0) continue;
+            for (int j = k + 1; j < size; j++) {
+                if (ds[j * 4 + 3] <= 0.0) continue;
+                double dx = ds[k * 4] - ds[j * 4], dy = ds[k * 4 + 1] - ds[j * 4 + 1], dz = ds[k * 4 + 2] - ds[j * 4 + 2];
+                double dr = ds[k * 4 + 3] - ds[j * 4 + 3];
+                if (dr * dr > dx * dx + dy * dy + dz * dz) {
+                    if (dr > 0.0) ds[j * 4 + 3] = -1.0; else ds[k * 4 + 3] = -1.0;
+                }
+            }
+        }
+
+        BitSet bs = new BitSet(q * rr * q);
+        for (int k = 0; k < size; k++) {
+            double d = ds[k * 4 + 3];
+            if (d < 0.0) continue;
+            double e = ds[k * 4], g2 = ds[k * 4 + 1], l2 = ds[k * 4 + 2];
+            int x0 = Math.max(Mth.floor(e - d), n);
+            int y0 = Math.max(Mth.floor(g2 - d), o);
+            int z0 = Math.max(Mth.floor(l2 - d), p);
+            int x1 = Math.max(Mth.floor(e + d), x0);
+            int y1 = Math.max(Mth.floor(g2 + d), y0);
+            int z1 = Math.max(Mth.floor(l2 + d), z0);
+            for (int tx = x0; tx <= x1; tx++) {
+                double u = ((double) tx + 0.5 - e) / d;
+                if (u * u >= 1.0) continue;
+                for (int ty = y0; ty <= y1; ty++) {
+                    double w = ((double) ty + 0.5 - g2) / d;
+                    if (u * u + w * w >= 1.0) continue;
+                    for (int tz = z0; tz <= z1; tz++) {
+                        double v = ((double) tz + 0.5 - l2) / d;
+                        if (u * u + w * w + v * v >= 1.0 || ty < MIN_Y || ty >= MAX_Y) continue;
+                        int idx = tx - n + (ty - o) * q + (tz - p) * q * rr;
+                        if (bs.get(idx)) continue;
+                        bs.set(idx);
+                        BlockState st = state(tx, ty, tz);
+                        if (st != null && !replaceable(st)) continue;
+                        boolean place;
+                        if (f.discard <= 0f) place = true;
+                        else if (f.discard >= 1f) place = !airAdjacent(tx, ty, tz);
+                        else place = r.nextFloat() >= f.discard || !airAdjacent(tx, ty, tz);
+                        if (place) sink.hit(tx, ty, tz);
+                    }
+                }
+            }
+        }
+    }
+}

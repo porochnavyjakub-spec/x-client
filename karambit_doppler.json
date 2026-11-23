@@ -1,0 +1,150 @@
+package dev.xclient.gui;
+
+import dev.xclient.core.Setting;
+import dev.xclient.util.Draw;
+import dev.xclient.xray.OreFeatures;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.CharacterEvent;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
+
+/** Searchable multi-select list of every block. Blocks with a worldgen model are marked with a star. */
+public class BlockPicker extends Screen {
+    private static final int W = 320, H = 280, ROW = 18, TOP = 44;
+    private static List<Block> ALL;
+
+    private final Screen parent;
+    private final Setting.Blocks set;
+    private String query = "";
+    private int scroll;
+    private List<Block> list = new ArrayList<>();
+
+    public BlockPicker(Screen parent, Setting.Blocks set) {
+        super(Component.literal("Select blocks"));
+        this.parent = parent;
+        this.set = set;
+        filter();
+    }
+
+    private static List<Block> all() {
+        if (ALL == null) {
+            ALL = new ArrayList<>();
+            for (Block b : BuiltInRegistries.BLOCK) if (b.asItem() != Items.AIR) ALL.add(b);
+            ALL.sort(Comparator.<Block>comparingInt(b -> OreFeatures.supports(b) ? 0 : 1)
+                    .thenComparing(b -> b.getName().getString()));
+        }
+        return ALL;
+    }
+
+    private void filter() {
+        String q = query.toLowerCase(Locale.ROOT).trim();
+        list = new ArrayList<>();
+        for (Block b : all()) {
+            if (q.isEmpty()
+                    || b.getName().getString().toLowerCase(Locale.ROOT).contains(q)
+                    || BuiltInRegistries.BLOCK.getKey(b).getPath().contains(q)) list.add(b);
+        }
+        scroll = 0;
+    }
+
+    private int x0() { return (width - W) / 2; }
+    private int y0() { return (height - H) / 2; }
+    private int viewH() { return H - TOP - 26; }
+
+    @Override public boolean isPauseScreen() { return false; }
+    @Override public void onClose() { minecraft.gui.setScreen(parent); }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
+        int x0 = x0(), y0 = y0();
+        g.fill(0, 0, width, height, 0xAA000000);
+        Draw.rrect(g, x0, y0, W, H, ClickGui.BG);
+        g.text(font, "Select blocks", x0 + 12, y0 + 10, ClickGui.ACCENT, true);
+        String cnt = set.value.size() + " selected";
+        g.text(font, cnt, x0 + W - 12 - font.width(cnt), y0 + 10, ClickGui.DIM, false);
+
+        Draw.rrect(g, x0 + 10, y0 + 22, W - 20, 18, ClickGui.FIELD);
+        g.outline(x0 + 10, y0 + 22, W - 20, 18, 0x668B5CF6);
+        boolean caret = (System.currentTimeMillis() / 500) % 2 == 0;
+        if (query.isEmpty()) g.text(font, "Search blocks (diamond, ancient, ...)", x0 + 16, y0 + 27, ClickGui.FAINT, false);
+        else g.text(font, query + (caret ? "_" : ""), x0 + 16, y0 + 27, ClickGui.TEXT, false);
+
+        g.enableScissor(x0 + 10, y0 + TOP, x0 + W - 10, y0 + TOP + viewH());
+        for (int i = 0; i < list.size(); i++) {
+            int y = y0 + TOP + i * ROW - scroll;
+            if (y + ROW < y0 + TOP || y > y0 + TOP + viewH()) continue;
+            Block b = list.get(i);
+            boolean on = set.value.contains(b);
+            boolean hov = mx >= x0 + 10 && mx < x0 + W - 10 && my >= y && my < y + ROW
+                    && my >= y0 + TOP && my < y0 + TOP + viewH();
+            if (hov) Draw.rrect(g, x0 + 10, y, W - 24, ROW - 2, ClickGui.HOVER);
+            Draw.rrect(g, x0 + 14, y + 3, 10, 10, on ? ClickGui.ACCENT : ClickGui.OFF);
+            if (on) g.fill(x0 + 17, y + 6, x0 + 21, y + 10, 0xFFFFFFFF);
+            boolean model = OreFeatures.supports(b);
+            g.text(font, (model ? "* " : "  ") + b.getName().getString(), x0 + 30, y + 5, on ? ClickGui.TEXT : ClickGui.DIM, false);
+        }
+        g.disableScissor();
+
+        g.text(font, "* = has a worldgen model (SeedXRay can predict it). Esc = back",
+                x0 + 12, y0 + H - 16, ClickGui.FAINT, false);
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent e, boolean doubleClick) {
+        double mx = e.x(), my = e.y();
+        int x0 = x0(), y0 = y0();
+        if (mx >= x0 + 10 && mx < x0 + W - 10 && my >= y0 + TOP && my < y0 + TOP + viewH()) {
+            int i = (int) ((my - y0 - TOP + scroll) / ROW);
+            if (i >= 0 && i < list.size()) {
+                Block b = list.get(i);
+                if (!set.value.remove(b)) set.value.add(b);
+                return true;
+            }
+        }
+        return super.mouseClicked(e, doubleClick);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mx, double my, double sx, double sy) {
+        int max = Math.max(0, list.size() * ROW - viewH());
+        scroll = Mth.clamp((int) (scroll - sy * ROW * 2), 0, max);
+        return true;
+    }
+
+    @Override
+    public boolean keyPressed(KeyEvent e) {
+        int key = e.key();
+        if (key == GLFW.GLFW_KEY_BACKSPACE && !query.isEmpty()) {
+            query = query.substring(0, query.length() - 1);
+            filter();
+            return true;
+        }
+        if ((e.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0 && key == GLFW.GLFW_KEY_V) {
+            query += minecraft.keyboardHandler.getClipboard().trim();
+            filter();
+            return true;
+        }
+        return super.keyPressed(e); // Esc -> onClose()
+    }
+
+    @Override
+    public boolean charTyped(CharacterEvent e) {
+        String s = new String(Character.toChars(e.codepoint()));
+        if (s.isEmpty() || s.charAt(0) < 32 || s.charAt(0) == 127 || query.length() >= 40) return false;
+        query += s;
+        filter();
+        return true;
+    }
+}

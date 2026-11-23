@@ -1,0 +1,81 @@
+package dev.xclient.core;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonPrimitive;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.block.Block;
+
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Supplier;
+
+public abstract class Setting<T> {
+    public final String name;
+    public T value;
+
+    protected Setting(String name, T value) { this.name = name; this.value = value; }
+
+    public JsonElement toJson() { return null; }
+    public void fromJson(JsonElement e) {}
+
+    public static final class Bool extends Setting<Boolean> {
+        public Bool(String n, boolean v) { super(n, v); }
+        @Override public JsonElement toJson() { return new JsonPrimitive(value); }
+        @Override public void fromJson(JsonElement e) { value = e.getAsBoolean(); }
+    }
+
+    public static final class Num extends Setting<Double> {
+        public final double min, max, step;
+        public Num(String n, double v, double min, double max, double step) {
+            super(n, v); this.min = min; this.max = max; this.step = step;
+        }
+        @Override public JsonElement toJson() { return new JsonPrimitive(value); }
+        @Override public void fromJson(JsonElement e) { value = Math.max(min, Math.min(max, e.getAsDouble())); }
+    }
+
+    public static final class Str extends Setting<String> {
+        public Str(String n, String v) { super(n, v); }
+        @Override public JsonElement toJson() { return new JsonPrimitive(value); }
+        @Override public void fromJson(JsonElement e) { value = e.getAsString(); }
+    }
+
+    /** Multi-select of blocks. */
+    public static final class Blocks extends Setting<Set<Block>> {
+        public Blocks(String n, Block... defaults) { super(n, new LinkedHashSet<>(List.of(defaults))); }
+        @Override public JsonElement toJson() {
+            JsonArray a = new JsonArray();
+            for (Block b : value) a.add(BuiltInRegistries.BLOCK.getKey(b).toString());
+            return a;
+        }
+        @Override public void fromJson(JsonElement e) {
+            value.clear();
+            for (JsonElement x : e.getAsJsonArray()) {
+                try {
+                    Identifier id = Identifier.tryParse(x.getAsString());
+                    if (id != null) BuiltInRegistries.BLOCK.getOptional(id).ifPresent(value::add);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /** Cycles through a fixed list of options (click = next, right click = previous). */
+    public static final class Mode extends Setting<Integer> {
+        public final String[] options;
+        public Mode(String n, String... options) { super(n, 0); this.options = options; }
+        public String label() { return options[value]; }
+        public void next(int dir) { value = Math.floorMod(value + dir, options.length); }
+        @Override public JsonElement toJson() { return new JsonPrimitive(value); }
+        @Override public void fromJson(JsonElement e) { value = Math.max(0, Math.min(options.length - 1, e.getAsInt())); }
+    }
+
+    public static final class Action extends Setting<Runnable> {
+        public Action(String n, Runnable r) { super(n, r); }
+    }
+
+    public static final class Info extends Setting<Supplier<String>> {
+        public Info(String n, Supplier<String> s) { super(n, s); }
+    }
+}

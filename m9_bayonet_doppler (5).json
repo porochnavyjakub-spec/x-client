@@ -1,0 +1,76 @@
+package dev.xclient.core;
+
+import com.mojang.blaze3d.platform.InputConstants;
+import dev.xclient.modules.*;
+import dev.xclient.util.ChunkScanner;
+import dev.xclient.util.Projection;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public final class ModuleManager {
+    public static final List<Module> ALL = new ArrayList<>();
+
+    public static void init() {
+        // Movement
+        ALL.add(new Sprint());
+        // Render
+        ALL.add(new PlayerEsp());
+        ALL.add(new SoundDetector());
+        ALL.add(new BlockEsp());
+        ALL.add(new StorageEsp());
+        ALL.add(new DeepslateFinder());
+        ALL.add(new HoleEsp());
+        ALL.add(new SusChunk());
+        ALL.add(new SeedXRay());
+        ALL.add(new Fullbright());
+        // PvP
+        ALL.add(new KillAura());
+        ALL.add(new TriggerBot());
+        ALL.add(new AutoTotem());
+        ALL.add(new PlayerAlert());
+        // Client
+        ALL.add(new SkyChanger());
+        ALL.add(new KnifeSkins());
+        // HUD
+        ALL.add(new TotemCounter());
+        ALL.add(new ModuleList());
+        ALL.add(new ArmorHud());
+        ALL.add(new Coordinates());
+        ALL.add(new InfoHud());
+    }
+
+    /** One (unbound) toggle key per module, configurable in the vanilla controls menu. */
+    public static void registerKeys(KeyMapping.Category cat) {
+        for (Module m : ALL) {
+            String id = m.name.toLowerCase().replace(" ", "_");
+            m.keyMapping = KeyMappingHelper.registerKeyMapping(
+                    new KeyMapping("key.xclient.module." + id, InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_UNKNOWN, cat));
+        }
+    }
+
+    public static void tick(Minecraft mc) {
+        for (Module m : ALL) {
+            while (m.keyMapping != null && m.keyMapping.consumeClick()) {
+                if (mc.player != null) m.toggle();
+            }
+        }
+        if (mc.player == null || mc.level == null) { ChunkScanner.I.process(mc); return; }
+        for (Module m : ALL) if (m.enabled) m.onTick();
+        ChunkScanner.I.process(mc);
+    }
+
+    public static void render(GuiGraphicsExtractor g, DeltaTracker dt) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || mc.level == null || mc.options.hideGui) return;
+        float td = dt.getGameTimeDeltaPartialTick(false);
+        Projection.partial = td;
+        for (Module m : ALL) if (m.enabled) m.onRender(g, td);
+    }
+}

@@ -1,0 +1,43 @@
+package dev.xclient.core;
+
+import com.google.gson.JsonObject;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public abstract class Module {
+    protected static final Minecraft mc = Minecraft.getInstance();
+
+    public final String name, desc;
+    public final Category category;
+    public final List<Setting<?>> settings = new ArrayList<>();
+    public boolean enabled, expanded;
+    /** Toggle key; unbound by default, rebind in Options > Controls > Key Binds. */
+    public KeyMapping keyMapping;
+
+    protected Module(String name, String desc, Category category) {
+        this.name = name; this.desc = desc; this.category = category;
+    }
+
+    protected <S extends Setting<?>> S add(S s) { settings.add(s); return s; }
+
+    public void toggle() { setEnabled(!enabled); }
+
+    public void setEnabled(boolean v) {
+        if (v == enabled) return;
+        enabled = v;
+        if (v) onEnable(); else onDisable();
+    }
+
+    public void onEnable() {}
+    public void onDisable() {}
+    public void onTick() {}
+    public void onRender(GuiGraphicsExtractor g, float tickDelta) {}
+
+    /** Extra persistent data (besides settings). */
+    public void save(JsonObject o) {}
+    public void load(JsonObject o) {}
+}

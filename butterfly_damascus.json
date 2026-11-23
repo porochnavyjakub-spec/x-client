@@ -1,0 +1,128 @@
+package dev.xclient.xray;
+
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Overworld ore placement data (vanilla values; heights are absolute Y, world is -64..319).
+ * {@link Feature#index} is the feature's position in the global UNDERGROUND_ORES step list,
+ * which decides its random seed. If a value is wrong for your version, use the
+ * "Calibrate" button in SeedXRay: it finds the right index from ores that are really visible.
+ */
+public final class OreFeatures {
+    public enum Rule { ANY, BADLANDS, MOUNTAIN, NO_DRIPSTONE, DRIPSTONE }
+    public enum Kind { DEFAULT, BADLANDS, MOUNTAIN, DRIPSTONE }
+
+    public enum Ore {
+        COAL("Coal", 0xFF4A4A4A, Blocks.COAL_ORE, Blocks.DEEPSLATE_COAL_ORE),
+        IRON("Iron", 0xFFD8AF93, Blocks.IRON_ORE, Blocks.DEEPSLATE_IRON_ORE),
+        COPPER("Copper", 0xFFE07B53, Blocks.COPPER_ORE, Blocks.DEEPSLATE_COPPER_ORE),
+        GOLD("Gold", 0xFFFCEE4B, Blocks.GOLD_ORE, Blocks.DEEPSLATE_GOLD_ORE),
+        REDSTONE("Redstone", 0xFFFF2A2A, Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE),
+        LAPIS("Lapis", 0xFF2F5BE0, Blocks.LAPIS_ORE, Blocks.DEEPSLATE_LAPIS_ORE),
+        DIAMOND("Diamond", 0xFF33EBCB, Blocks.DIAMOND_ORE, Blocks.DEEPSLATE_DIAMOND_ORE),
+        EMERALD("Emerald", 0xFF17DD62, Blocks.EMERALD_ORE, Blocks.DEEPSLATE_EMERALD_ORE);
+
+        public final String label;
+        public final int color;
+        public final Set<Block> blocks;
+
+        Ore(String label, int color, Block... b) { this.label = label; this.color = color; this.blocks = Set.of(b); }
+
+        public static Ore of(Block b) {
+            for (Ore o : values()) if (o.blocks.contains(b)) return o;
+            return null;
+        }
+    }
+
+    public static final class Feature {
+        public final String name;
+        public final Ore ore;
+        public final int defIndex;
+        public int index;
+        final int cMin, cMax, rarity, hMin, hMax, size;
+        final boolean trapezoid;
+        final float discard;
+        final Rule rule;
+
+        Feature(String name, Ore ore, int idx, int cMin, int cMax, int rarity, boolean trap, int hMin, int hMax,
+                int size, float discard, Rule rule) {
+            this.name = name; this.ore = ore; this.defIndex = idx; this.index = idx;
+            this.cMin = cMin; this.cMax = cMax; this.rarity = rarity; this.trapezoid = trap;
+            this.hMin = hMin; this.hMax = hMax; this.size = size; this.discard = discard; this.rule = rule;
+        }
+
+        /** Count / rarity placement modifier (consumes exactly what vanilla consumes). */
+        int rollCount(RandomSource r) {
+            if (rarity > 0) return r.nextFloat() < 1.0f / rarity ? 1 : 0;
+            if (cMin == cMax) return cMin;
+            return r.nextInt(cMax - cMin + 1) + cMin;
+        }
+
+        int rollY(RandomSource r) {
+            if (!trapezoid) return r.nextInt(hMax - hMin + 1) + hMin;
+            int k = hMax - hMin;
+            int l = k / 2;
+            int m = k - l;
+            return hMin + r.nextInt(m + 1) + r.nextInt(l + 1);
+        }
+
+        boolean allowed(Kind k) {
+            return switch (rule) {
+                case ANY -> true;
+                case BADLANDS -> k == Kind.BADLANDS;
+                case MOUNTAIN -> k == Kind.MOUNTAIN;
+                case NO_DRIPSTONE -> k != Kind.DRIPSTONE;
+                case DRIPSTONE -> k == Kind.DRIPSTONE;
+            };
+        }
+    }
+
+    private static Feature c(String n, Ore o, int idx, int count, boolean trap, int h0, int h1, int size, float discard, Rule rule) {
+        return new Feature(n, o, idx, count, count, 0, trap, h0, h1, size, discard, rule);
+    }
+
+    public static final List<Feature> ALL = List.of(
+            c("coal_upper", Ore.COAL, 9, 30, false, 136, 319, 17, 0.0f, Rule.ANY),
+            c("coal_lower", Ore.COAL, 10, 20, true, 0, 192, 17, 0.5f, Rule.ANY),
+            c("iron_upper", Ore.IRON, 11, 90, true, 80, 384, 9, 0.0f, Rule.ANY),
+            c("iron_middle", Ore.IRON, 12, 10, true, -24, 56, 9, 0.0f, Rule.ANY),
+            c("iron_small", Ore.IRON, 13, 10, false, -64, 72, 4, 0.0f, Rule.ANY),
+            c("gold", Ore.GOLD, 14, 4, true, -64, 32, 9, 0.5f, Rule.ANY),
+            new Feature("gold_lower", Ore.GOLD, 15, 0, 1, 0, false, -64, -48, 9, 0.5f, Rule.ANY),
+            c("redstone", Ore.REDSTONE, 16, 4, false, -64, 15, 8, 0.0f, Rule.ANY),
+            c("redstone_lower", Ore.REDSTONE, 17, 8, true, -96, -32, 8, 0.0f, Rule.ANY),
+            c("diamond", Ore.DIAMOND, 18, 7, true, -144, 16, 4, 0.5f, Rule.ANY),
+            c("diamond_medium", Ore.DIAMOND, 19, 2, false, -64, -4, 8, 0.5f, Rule.ANY),
+            new Feature("diamond_large", Ore.DIAMOND, 20, 0, 0, 9, true, -144, 16, 12, 0.7f, Rule.ANY),
+            c("diamond_buried", Ore.DIAMOND, 21, 4, true, -144, 16, 8, 1.0f, Rule.ANY),
+            c("lapis", Ore.LAPIS, 22, 2, true, -32, 32, 7, 0.0f, Rule.ANY),
+            c("lapis_buried", Ore.LAPIS, 23, 4, false, -64, 64, 7, 1.0f, Rule.ANY),
+            c("copper", Ore.COPPER, 24, 16, true, -16, 112, 10, 0.0f, Rule.NO_DRIPSTONE),
+            c("copper_large", Ore.COPPER, 25, 16, true, -16, 112, 20, 0.0f, Rule.DRIPSTONE),
+            c("gold_extra", Ore.GOLD, 26, 50, false, 32, 256, 9, 0.5f, Rule.BADLANDS),
+            c("emerald", Ore.EMERALD, 27, 100, true, -16, 480, 3, 0.0f, Rule.MOUNTAIN)
+    );
+
+    public static boolean supports(Block b) { return Ore.of(b) != null; }
+
+    public static Kind kindOf(String biomeId) {
+        if (biomeId.endsWith("badlands")) return Kind.BADLANDS;
+        if (biomeId.endsWith(":dripstone_caves")) return Kind.DRIPSTONE;
+        for (String m : new String[]{"windswept_hills", "windswept_gravelly_hills", "windswept_forest", "jagged_peaks",
+                "frozen_peaks", "stony_peaks", "snowy_slopes", "grove", "meadow", "cherry_grove"}) {
+            if (biomeId.endsWith(":" + m)) return Kind.MOUNTAIN;
+        }
+        return Kind.DEFAULT;
+    }
+
+    public static String signature() {
+        StringBuilder sb = new StringBuilder();
+        for (Feature f : ALL) sb.append(f.name).append(':').append(f.index).append(',');
+        return sb.toString();
+    }
+}

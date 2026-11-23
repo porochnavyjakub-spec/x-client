@@ -1,0 +1,19 @@
+package dev.xclient.util;
+
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+
+public final class Draw {
+    /** Filled rectangle with softly cut corners (h >= 6). */
+    public static void rrect(GuiGraphicsExtractor g, int x, int y, int w, int h, int col) {
+        g.fill(x + 2, y, x + w - 2, y + 1, col);
+        g.fill(x + 1, y + 1, x + w - 1, y + 2, col);
+        g.fill(x, y + 2, x + w, y + h - 2, col);
+        g.fill(x + 1, y + h - 2, x + w - 1, y + h - 1, col);
+        g.fill(x + 2, y + h - 1, x + w - 2, y + h, col);
+    }
+
+    public static void toggle(GuiGraphicsExtractor g, int x, int y, boolean on, int accent, int off) {
+        rrect(g, x, y, 24, 12, on ? accent : off);
+        g.fill(x + (on ? 14 : 2), y + 2, x + (on ? 22 : 10), y + 10, 0xFFFFFFFF);
+    }
+}

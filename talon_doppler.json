@@ -1,0 +1,254 @@
+package dev.xclient.xray;
+
+import dev.xclient.modules.SeedXRay;
+import dev.xclient.util.Projection;
+import dev.xclient.xray.OreFeatures.Feature;
+import dev.xclient.xray.OreFeatures.Ore;
+import dev.xclient.xray.OreSim.Rng;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.WorldgenRandom;
+import net.minecraft.world.phys.Vec3;
+
+import java.util.*;
+
+/** Simulates ore generation chunk by chunk (time-sliced on the main thread) and renders the result. */
+public final class XRayEngine {
+    public static final XRayEngine I = new XRayEngine();
+
+    public record Hit(int x, int y, int z, Ore ore) {}
+
+    public Rng rng = Rng.XOROSHIRO;
+    public String status = "Idle";
+
+    private final Map<Long, List<Hit>> cache = new HashMap<>();
+    private List<Hit> visible = List.of();
+    private String sig = "";
+    private int ticks;
+    private boolean wantCal;
+    private Calibrator cal;
+
+    public void reset() {
+        cache.clear();
+        visible = List.of();
+        sig = "";
+        cal = null;
+    }
+
+    public void requestCalibration() { wantCal = true; }
+
+    public static Long parseSeed(String s) {
+        s = s.trim();
+        if (s.isEmpty()) return null;
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return (long) s.hashCode(); }
+    }
+
+    private static long key(int cx, int cz) { return ((long) cx << 32) | (cz & 0xFFFFFFFFL); }
+
+    public void tick(Minecraft mc, SeedXRay m) {
+        ClientLevel w = mc.level;
+        LocalPlayer p = mc.player;
+        if (w == null || p == null) return;
+        if (!w.dimension().equals(Level.OVERWORLD)) { status = "Overworld only"; visible = List.of(); return; }
+        Long seed = parseSeed(m.seed.value);
+        if (seed == null) { status = "Enter the world seed"; visible = List.of(); return; }
+
+        Set<Ore> sel = EnumSet.noneOf(Ore.class);
+        for (Block b : m.blocks.value) {
+            Ore o = Ore.of(b);
+            if (o != null) sel.add(o);
+        }
+        if (sel.isEmpty()) { status = "No supported block selected"; visible = List.of(); return; }
+
+        int r = (int) Math.round(m.radius.value);
+        int pcx = p.getBlockX() >> 4, pcz = p.getBlockZ() >> 4;
+
+        String s = seed + "|" + sel + "|" + rng + "|" + OreFeatures.signature();
+        if (!s.equals(sig)) { sig = s; cache.clear(); visible = List.of(); }
+
+        if (wantCal) {
+            wantCal = false;
+            cal = new Calibrator(w, seed, pcx, pcz, sel);
+            status = "Calibrating...";
+        }
+        if (cal != null) {
+            cal.step(6_000_000L);
+            if (cal.done) {
+                String msg = cal.finish(this);
+                cal = null;
+                p.sendSystemMessage(Component.literal("§8[§dXRay§8] §f" + msg));
+                sig = "";
+            } else {
+                status = "Calibrating " + cal.percent() + "%";
+            }
+            return;
+        }
+
+        // simulate missing chunks, nearest first, within a small time budget
+        List<int[]> todo = new ArrayList<>();
+        for (int dx = -r - 1; dx <= r + 1; dx++)
+            for (int dz = -r - 1; dz <= r + 1; dz++) {
+                int cx = pcx + dx, cz = pcz + dz;
+                if (!cache.containsKey(key(cx, cz)) && w.getChunkSource().getChunkNow(cx, cz) != null)
+                    todo.add(new int[]{cx, cz, dx * dx + dz * dz});
+            }
+        todo.sort(Comparator.comparingInt(a -> a[2]));
+        long end = System.nanoTime() + 5_000_000L;
+        OreSim sim = new OreSim(w);
+        WorldgenRandom rnd = OreSim.newRandom(rng);
+        for (int[] c : todo) {
+            if (System.nanoTime() > end) break;
+            cache.put(key(c[0], c[1]), simulate(sim, rnd, seed, c[0], c[1], sel));
+        }
+        cache.keySet().removeIf(k -> {
+            int cx = (int) (k >> 32), cz = (int) (long) k;
+            return Math.abs(cx - pcx) > r + 3 || Math.abs(cz - pcz) > r + 3;
+        });
+
+        if (++ticks % 10 == 0) refresh(w, p, m);
+        status = visible.size() + " ores | " + cache.size() + " chunks | " + rng;
+    }
+
+    private List<Hit> simulate(OreSim sim, WorldgenRandom rnd, long seed, int cx, int cz, Set<Ore> sel) {
+        List<Hit> out = new ArrayList<>();
+        long pop = rnd.setDecorationSeed(seed, cx << 4, cz << 4);
+        for (Feature f : OreFeatures.ALL)
+            if (sel.contains(f.ore)) sim.run(rnd, pop, cx, cz, f, f.index, (x, y, z) -> out.add(new Hit(x, y, z, f.ore)));
+        return out;
+    }
+
+    private void refresh(ClientLevel w, LocalPlayer p, SeedXRay m) {
+        double max = m.maxDist.value, max2 = max * max;
+        double px = p.getX(), py = p.getY(), pz = p.getZ();
+        List<Hit> out = new ArrayList<>();
+        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+        for (List<Hit> l : cache.values()) {
+            for (Hit h : l) {
+                double dx = h.x + .5 - px, dy = h.y + .5 - py, dz = h.z + .5 - pz;
+                if (dx * dx + dy * dy + dz * dz > max2) continue;
+                BlockState s = w.getBlockState(mp.set(h.x, h.y, h.z));
+                if (s.isAir() || !s.getFluidState().isEmpty()) continue; // prediction contradicted by real terrain
+                out.add(h);
+            }
+        }
+        out.sort(Comparator.comparingDouble((Hit h) -> {
+            double dx = h.x + .5 - px, dy = h.y + .5 - py, dz = h.z + .5 - pz;
+            return dx * dx + dy * dy + dz * dz;
+        }));
+        visible = out.size() > 600 ? new ArrayList<>(out.subList(0, 600)) : out;
+    }
+
+    public void render(GuiGraphicsExtractor g, Minecraft mc, SeedXRay m) {
+        int sw = mc.getWindow().getGuiScaledWidth(), sh = mc.getWindow().getGuiScaledHeight();
+        LocalPlayer p = mc.player;
+        if (p == null) return;
+        int shown = 0;
+        for (Hit h : visible) {
+            float[] s = Projection.toScreen(new Vec3(h.x + 0.5, h.y + 0.5, h.z + 0.5));
+            if (s == null || s[0] < -40 || s[0] > sw + 40 || s[1] < -40 || s[1] > sh + 40) continue;
+            int half = (int) Math.min(30, Math.max(2, s[2] * 0.5f));
+            int x = (int) s[0], y = (int) s[1];
+            int col = h.ore().color;
+            g.fill(x - half, y - half, x + half, y + half, (col & 0xFFFFFF) | 0x55000000);
+            g.outline(x - half, y - half, half * 2, half * 2, col);
+            if (shown++ < 10) {
+                String t = h.ore().label + " " + (int) p.position().distanceTo(new Vec3(h.x + .5, h.y + .5, h.z + .5)) + "m";
+                g.text(mc.font, t, x - mc.font.width(t) / 2, y - half - 10, col, true);
+            }
+        }
+        g.text(mc.font, "XRay: " + status, 6, sh - 12, 0xFFB8A4FF, true);
+    }
+
+    /**
+     * Finds the correct feature index (and RNG type) by comparing predictions with real ore blocks
+     * that are exposed in loaded chunks around the player. Anti-xray never hides exposed ores.
+     */
+    private static final class Calibrator {
+        static final int N = 64;
+
+        final ClientLevel w;
+        final long seed;
+        final int pcx, pcz;
+        final List<Feature> feats = new ArrayList<>();
+        final int[][][] hits;
+        int ri, fi, idx;
+        boolean done;
+
+        Calibrator(ClientLevel w, long seed, int pcx, int pcz, Set<Ore> sel) {
+            this.w = w; this.seed = seed; this.pcx = pcx; this.pcz = pcz;
+            for (Feature f : OreFeatures.ALL) if (sel.contains(f.ore)) feats.add(f);
+            hits = new int[2][Math.max(1, feats.size())][N];
+        }
+
+        int percent() {
+            int total = 2 * feats.size() * N;
+            int cur = (ri * feats.size() + fi) * N + idx;
+            return total == 0 ? 100 : cur * 100 / total;
+        }
+
+        void step(long ns) {
+            long end = System.nanoTime() + ns;
+            while (!done && System.nanoTime() < end) {
+                if (feats.isEmpty()) { done = true; break; }
+                Feature f = feats.get(fi);
+                WorldgenRandom r = OreSim.newRandom(Rng.values()[ri]);
+                OreSim sim = new OreSim(w);
+                int[] cnt = {0};
+                BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+                for (int dx = -2; dx <= 2; dx++)
+                    for (int dz = -2; dz <= 2; dz++) {
+                        int cx = pcx + dx, cz = pcz + dz;
+                        if (w.getChunkSource().getChunkNow(cx, cz) == null) continue;
+                        long pop = r.setDecorationSeed(seed, cx << 4, cz << 4);
+                        sim.run(r, pop, cx, cz, f, idx, (x, y, z) -> {
+                            if (Ore.of(w.getBlockState(mp.set(x, y, z)).getBlock()) == f.ore) cnt[0]++;
+                        });
+                    }
+                hits[ri][fi][idx] = cnt[0];
+                if (++idx == N) {
+                    idx = 0;
+                    if (++fi == feats.size()) { fi = 0; if (++ri == 2) done = true; }
+                }
+            }
+        }
+
+        String finish(XRayEngine e) {
+            int[] totals = new int[2];
+            int[][] best = new int[2][feats.size()];
+            boolean[][] sure = new boolean[2][feats.size()];
+            for (int r = 0; r < 2; r++)
+                for (int f = 0; f < feats.size(); f++) {
+                    int max = -1, second = -1, arg = 0;
+                    for (int i = 0; i < N; i++) {
+                        int v = hits[r][f][i];
+                        if (v > max) { second = max; max = v; arg = i; }
+                        else if (v > second) second = v;
+                    }
+                    best[r][f] = arg;
+                    if (max >= 3 && max >= 2 * Math.max(1, second)) { sure[r][f] = true; totals[r] += max; }
+                }
+            int pick = totals[1] > totals[0] ? 1 : 0;
+            if (totals[pick] == 0)
+                return "Calibration failed: no exposed ores of the selected types nearby (or the seed is wrong). "
+                        + "Go to a cave/ravine with visible ores and retry.";
+            e.rng = Rng.values()[pick];
+            List<Integer> deltas = new ArrayList<>();
+            int ok = 0;
+            for (int f = 0; f < feats.size(); f++) {
+                if (sure[pick][f]) { feats.get(f).index = best[pick][f]; deltas.add(best[pick][f] - feats.get(f).defIndex); ok++; }
+            }
+            Collections.sort(deltas);
+            int med = deltas.isEmpty() ? 0 : deltas.get(deltas.size() / 2);
+            for (int f = 0; f < feats.size(); f++)
+                if (!sure[pick][f]) feats.get(f).index = feats.get(f).defIndex + med;
+            return "Calibrated " + ok + "/" + feats.size() + " features, rng=" + e.rng + ", shift=" + med;
+        }
+    }
+}

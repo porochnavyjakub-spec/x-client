@@ -1,0 +1,31 @@
+package dev.xclient.util;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.phys.Vec3;
+
+/** World -> scaled GUI coordinates for the 2D overlay ESP (first-person view). */
+public final class Projection {
+    /** Updated every frame by ModuleManager.render. */
+    public static float partial = 1f;
+
+    /** @return {x, y, pixelsPerBlockAtDepth} or null when behind the camera. */
+    public static float[] toScreen(Vec3 world) {
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer p = mc.player;
+        if (p == null) return null;
+        Vec3 d = world.subtract(p.getEyePosition(partial));
+        double yaw = Math.toRadians(p.getViewYRot(partial)), pitch = Math.toRadians(p.getViewXRot(partial));
+        double cp = Math.cos(pitch);
+        Vec3 fwd = new Vec3(-Math.sin(yaw) * cp, -Math.sin(pitch), Math.cos(yaw) * cp);
+        Vec3 right = new Vec3(-Math.cos(yaw), 0, -Math.sin(yaw));
+        Vec3 up = right.cross(fwd);
+        double z = d.dot(fwd);
+        if (z < 0.1) return null;
+        double x = d.dot(right), y = d.dot(up);
+        int w = mc.getWindow().getGuiScaledWidth(), h = mc.getWindow().getGuiScaledHeight();
+        double tan = Math.tan(Math.toRadians(mc.options.fov().get()) / 2.0);
+        double f = (h / 2.0) / tan;
+        return new float[]{(float) (w / 2.0 + x / z * f), (float) (h / 2.0 - y / z * f), (float) (f / z)};
+    }
+}

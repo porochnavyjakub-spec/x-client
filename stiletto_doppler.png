@@ -1,0 +1,7 @@
+{
+  "required": false,
+  "package": "dev.xclient.mixin.optional",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["SkyRendererMixin", "FogRendererMixin"],
+  "injectors": { "defaultRequire": 0 }
+}

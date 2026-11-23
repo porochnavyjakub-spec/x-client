@@ -1,0 +1,10 @@
+package dev.xclient.core;
+
+/** Panel order = left to right in the ClickGUI (as in the sketch). */
+public enum Category {
+    MOVEMENT("Movement"), RENDER("Render"), PVP("PvP"), CLIENT("Client"), HUD("HUD");
+
+    public final String label;
+
+    Category(String label) { this.label = label; }
+}
